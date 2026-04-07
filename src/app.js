@@ -1,0 +1,803 @@
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const morgan = require('morgan');
+const axios = require('axios');
+require('dotenv').config();
+
+const app = express();
+
+// Service URLs
+const BIGSERVER_URL = `http://localhost:${process.env.BIGSERVER_PORT}`;
+const DB_MANAGER_URL = `http://localhost:${process.env.DB_MANAGER_PORT}`;
+
+// Service connection status
+let bigserverConnected = false;
+let dbManagerConnected = false;
+
+// Enhanced service connection checking with retry logic
+const checkServiceConnections = async () => {
+  const maxRetries = 3;
+  const retryDelay = 2000; // 2 seconds
+  
+  const checkWithRetry = async (serviceName, url, headers = {}, retries = maxRetries) => {
+    for (let i = 0; i < retries; i++) {
+      try {
+        const response = await axios.get(url, { timeout: 5000, headers });
+        if (response.status === 200) {
+          return { success: true, data: response.data };
+        }
+      } catch (error) {
+        if (i === retries - 1) {
+          throw error;
+        }
+        console.log(`⚠️  ${serviceName} connection attempt ${i + 1} failed, retrying in ${retryDelay/1000}s...`);
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+      }
+    }
+  };
+  
+  try {
+    // Check BigServer connection with API key
+    try {
+      const bigserverResult = await checkWithRetry(
+        'BigServer',
+        `${BIGSERVER_URL}/health`,
+        {
+          'Authorization': `Bearer ${process.env.BIGSERVER_API_KEY}`,
+          'X-API-Key': process.env.BIGSERVER_API_KEY
+        }
+      );
+      
+      bigserverConnected = true;
+      console.log('✅ Connected to Big Server (Port ' + process.env.BIGSERVER_PORT + ') with API key');
+      console.log('   📊 Big Server Status:', bigserverResult.data.status);
+      
+    } catch (error) {
+      bigserverConnected = false;
+      console.log('❌ Failed to connect to Big Server (Port ' + process.env.BIGSERVER_PORT + '):', error.message);
+      if (error.response && error.response.status === 401) {
+        console.log('🔑 API Key authentication failed - check your API key configuration');
+      }
+    }
+
+    // Check DB Manager connection
+    try {
+      const dbManagerResult = await checkWithRetry('DB Manager', `${DB_MANAGER_URL}/health`);
+      
+      dbManagerConnected = true;
+      console.log('✅ Connected to DB Manager (Port ' + process.env.DB_MANAGER_PORT + ')');
+      console.log('   📊 DB Manager Status:', dbManagerResult.data.status);
+      console.log('   🗄️  Database Status:', dbManagerResult.data.databases?.sqlite?.status || 'Unknown');
+      
+    } catch (error) {
+      dbManagerConnected = false;
+      console.log('❌ Failed to connect to DB Manager (Port ' + process.env.DB_MANAGER_PORT + '):', error.message);
+    }
+    
+    // Enhanced connection summary
+    const connectionStatus = {
+      bigserver: bigserverConnected ? 'connected' : 'disconnected',
+      db_manager: dbManagerConnected ? 'connected' : 'disconnected',
+      overall: (bigserverConnected && dbManagerConnected) ? 'healthy' : 'degraded'
+    };
+    
+    console.log('📊 Connection Status Summary:', connectionStatus);
+    
+  } catch (error) {
+    console.error('Error checking service connections:', error.message);
+  }
+};
+
+// Enhanced health check with detailed information
+const performHealthCheck = async () => {
+  const health = {
+    status: 'healthy',
+    stage: 'Stage 1',
+    port: process.env.PORT,
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    connections: {
+      bigserver: {
+        connected: bigserverConnected,
+        port: process.env.BIGSERVER_PORT,
+        url: BIGSERVER_URL,
+        lastChecked: new Date().toISOString()
+      },
+      db_manager: {
+        connected: dbManagerConnected,
+        port: process.env.DB_MANAGER_PORT,
+        url: DB_MANAGER_URL,
+        lastChecked: new Date().toISOString()
+      }
+    },
+    businessLogic: {
+      stagesSupported: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'],
+      amountRanges: {
+        low: { stages: ['A', 'B'], amount: 10 },
+        medium: { stages: ['C', 'D'], amount: 20 },
+        high: { stages: ['E', 'F'], amount: 30 },
+        premium: { stages: ['G', 'H'], amount: 50 },
+        elite: { stages: ['I', 'J'], amount: 100 },
+        ultimate: { stages: ['K', 'L'], amount: 200 }
+      }
+    },
+    endpoints: {
+      getLastGameId: `/api/v1/game/last-id?stage=<stage>`,
+      getAllLastGameIds: `/api/v1/game/last-id/all`,
+      createGame: `/api/v1/game/create`,
+      getStageStatus: `/api/v1/game/status/<stage>`
+    }
+  };
+  
+  // Determine overall health
+  if (!bigserverConnected && !dbManagerConnected) {
+    health.status = 'unhealthy';
+  } else if (!bigserverConnected || !dbManagerConnected) {
+    health.status = 'degraded';
+  }
+  
+  return health;
+};
+
+// Middleware
+app.use(helmet());
+app.use(cors());
+app.use(morgan('combined'));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// API Routes
+const apiPrefix = '/api/v1';
+app.use(`${apiPrefix}/games`, require('./routes/gameRoutes'));
+app.use(`${apiPrefix}/players`, require('./routes/playerRoutes'));
+app.use(`${apiPrefix}/stage-a`, require('./routes/stageARoutes'));
+app.use(`${apiPrefix}/stage-b`, require('./routes/stageBroutes'));
+
+// Enhanced DB Manager Integration Routes
+app.get(`${apiPrefix}/game/last-id`, async (req, res) => {
+  try {
+    const { stage = 'a' } = req.query; // Default to stage A if not specified
+    console.log(`🔍 Requesting last game ID from DB Manager for Stage ${stage.toUpperCase()}...`);
+    
+    // Request last game ID from DB Manager for specific stage
+    const response = await axios.get(`${DB_MANAGER_URL}/api/v1/stage-${stage}/last-game-id`, { 
+      timeout: 10000 
+    });
+    
+    if (response.data && response.data.success) {
+      const gameData = response.data.data;
+      console.log(`✅ Received last game ID from DB Manager for Stage ${stage.toUpperCase()}:`, gameData);
+      
+      // Enhanced response with business logic validation
+      res.json({
+        success: true,
+        data: {
+          ...gameData,
+          stage: stage.toUpperCase(),
+          businessLogic: {
+            amount: getStageAmount(stage.toUpperCase()),
+            calculatedPayout: gameData.payout,
+            playerCount: gameData.numberOfPlayerIds,
+            totalBet: (gameData.numberOfPlayerIds * getStageAmount(stage.toUpperCase())),
+            ownerCommission: (gameData.numberOfPlayerIds * getStageAmount(stage.toUpperCase())) * 0.2
+          }
+        },
+        source: 'db_manager',
+        stage: 'stage1',
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      throw new Error('Invalid response from DB Manager');
+    }
+    
+  } catch (error) {
+    console.error('❌ Error getting last game ID from DB Manager:', error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get last game ID from DB Manager',
+      details: error.message,
+      stage: 'stage1'
+    });
+  }
+});
+
+// Get last game ID for all stages
+app.get(`${apiPrefix}/game/last-id/all`, async (req, res) => {
+  try {
+    console.log('🔍 Requesting last game IDs from ALL stages...');
+    
+    const stages = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l'];
+    const results = {};
+    
+    for (const stage of stages) {
+      try {
+        const response = await axios.get(`${DB_MANAGER_URL}/api/v1/stage-${stage}/last-game-id`, { 
+          timeout: 5000 
+        });
+        
+        if (response.data && response.data.success) {
+          results[stage.toUpperCase()] = {
+            ...response.data.data,
+            businessLogic: {
+              amount: getStageAmount(stage.toUpperCase()),
+              totalBet: response.data.data.numberOfPlayerIds * getStageAmount(stage.toUpperCase()),
+              payoutPercentage: 80,
+              ownerPercentage: 20
+            }
+          };
+        }
+      } catch (error) {
+        console.warn(`⚠️  Failed to get data for Stage ${stage.toUpperCase()}:`, error.message);
+        results[stage.toUpperCase()] = {
+          error: error.message,
+          available: false
+        };
+      }
+    }
+    
+    const summary = {
+      totalStages: stages.length,
+      availableStages: Object.values(results).filter(r => !r.error).length,
+      totalPayouts: Object.values(results)
+        .filter(r => !r.error && r.payout)
+        .reduce((sum, r) => sum + r.payout, 0)
+    };
+    
+    console.log('✅ Retrieved game IDs from all stages:', summary);
+    
+    res.json({
+      success: true,
+      data: results,
+      summary,
+      source: 'db_manager',
+      stage: 'stage1',
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error getting last game IDs from all stages:', error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get last game IDs from all stages',
+      details: error.message,
+      stage: 'stage1'
+    });
+  }
+});
+
+// Create new game record for any stage
+app.post(`${apiPrefix}/game/create`, async (req, res) => {
+  try {
+    const { stage, gameId, playerId, selectedBoard } = req.body;
+    
+    if (!stage || !gameId || !playerId || !selectedBoard) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: stage, gameId, playerId, selectedBoard'
+      });
+    }
+    
+    if (!['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l'].includes(stage.toLowerCase())) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid stage. Must be one of: A, B, C, D, E, F, G, H, I, J, K, L'
+      });
+    }
+    
+    console.log(`🎮 Creating new game record for Stage ${stage.toUpperCase()}...`);
+    
+    const gameData = {
+      gameId,
+      playerId,
+      selectedBoard,
+      status: 'active',
+      stage: stage.toUpperCase()
+    };
+    
+    const response = await axios.post(`${DB_MANAGER_URL}/api/v1/stage-${stage}/create`, gameData, { 
+      timeout: 10000 
+    });
+    
+    if (response.data && response.data.success) {
+      console.log(`✅ Created game record for Stage ${stage.toUpperCase()}:`, response.data.data);
+      
+      res.json({
+        success: true,
+        data: response.data.data,
+        message: `Game record created successfully for Stage ${stage.toUpperCase()}`,
+        source: 'db_manager',
+        stage: 'stage1'
+      });
+    } else {
+      throw new Error('Invalid response from DB Manager');
+    }
+    
+  } catch (error) {
+    console.error('❌ Error creating game record:', error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create game record',
+      details: error.message,
+      stage: 'stage1'
+    });
+  }
+});
+
+// Get stage status
+app.get(`${apiPrefix}/game/status/:stage`, async (req, res) => {
+  try {
+    const { stage } = req.params;
+    
+    if (!['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l'].includes(stage.toLowerCase())) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid stage. Must be one of: A, B, C, D, E, F, G, H, I, J, K, L'
+      });
+    }
+    
+    console.log(`📊 Getting status for Stage ${stage.toUpperCase()}...`);
+    
+    const response = await axios.get(`${DB_MANAGER_URL}/api/v1/stage-${stage}/status`, { 
+      timeout: 5000 
+    });
+    
+    if (response.data && response.data.success) {
+      console.log(`✅ Got status for Stage ${stage.toUpperCase()}:`, response.data.data);
+      
+      res.json({
+        success: true,
+        data: response.data.data,
+        source: 'db_manager',
+        stage: 'stage1'
+      });
+    } else {
+      throw new Error('Invalid response from DB Manager');
+    }
+    
+  } catch (error) {
+    console.error(`❌ Error getting status for stage ${req.params.stage}:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get stage status',
+      details: error.message,
+      stage: 'stage1'
+    });
+  }
+});
+
+// Get latest game data with highest game ID and parsed selectedBoard
+app.get(`${apiPrefix}/game/latest-data`, async (req, res) => {
+  try {
+    const { stage = 'a' } = req.query; // Default to stage A for Stage1
+    console.log(`🔍 Stage1: Requesting latest game data from DB Manager for Stage ${stage.toUpperCase()}...`);
+    
+    // Request highest game ID record from DB Manager for specific stage
+    const response = await axios.get(`${DB_MANAGER_URL}/api/v1/stage-${stage}/last-game-id`, { 
+      timeout: 10000 
+    });
+    
+    if (response.data && response.data.success) {
+      const gameData = response.data.data;
+      console.log(`✅ Stage1: Received latest game data from DB Manager for Stage ${stage.toUpperCase()}:`, gameData);
+      
+      // Parse selectedBoard format: "+251909090909:2,+251909090910:4"
+      const parsedData = parseSelectedBoard(gameData.selectedBoard || '');
+      
+      // Format response for frontend
+      const formattedResponse = {
+        gameId: gameData.gameId || '',
+        payout: gameData.payout || 0,
+        players: parsedData.playerIds,
+        boards: parsedData.boards,
+        totalPlayers: parsedData.totalPlayers,
+        stage: stage.toUpperCase(),
+        timestamp: new Date().toISOString()
+      };
+      
+      console.log(`✅ Stage1: Formatted latest game data for frontend:`, formattedResponse);
+      
+      res.json({
+        success: true,
+        data: formattedResponse,
+        source: 'db_manager',
+        stage: 'stage1',
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      throw new Error('Invalid response from DB Manager');
+    }
+    
+  } catch (error) {
+    console.error('❌ Stage1: Error getting latest game data from DB Manager:', error.message);
+    
+    // Return fallback data if DB Manager is unavailable
+    const fallbackData = {
+      gameId: 'G00000',
+      payout: 0,
+      players: '',
+      boards: '',
+      totalPlayers: 0,
+      stage: 'A',
+      timestamp: new Date().toISOString()
+    };
+    
+    res.json({
+      success: true,
+      data: fallbackData,
+      source: 'fallback',
+      stage: 'stage1',
+      warning: 'DB Manager unavailable, using fallback data',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Helper function to parse selectedBoard format
+function parseSelectedBoard(selectedBoard) {
+  try {
+    if (!selectedBoard || typeof selectedBoard !== 'string') {
+      return {
+        playerIds: '',
+        boards: '',
+        totalPlayers: 0
+      };
+    }
+    
+    console.log('🔍 Parsing selectedBoard:', selectedBoard);
+    
+    // Split by comma to get individual player:board pairs
+    const pairs = selectedBoard.split(',');
+    
+    const playerIds = [];
+    const boards = [];
+    
+    pairs.forEach(pair => {
+      if (pair && pair.includes(':')) {
+        const parts = pair.split(':');
+        if (parts.length >= 2) {
+          // Player ID is the first part, board number is the last part
+          const playerId = parts[0].trim();
+          const boardNum = parts[parts.length - 1].trim();
+          
+          if (playerId && boardNum) {
+            playerIds.push(playerId);
+            boards.push(boardNum);
+            console.log(`✅ Parsed: ${playerId} → Board ${boardNum}`);
+          }
+        }
+      }
+    });
+    
+    const result = {
+      playerIds: playerIds.join(','),
+      boards: boards.join(','),
+      totalPlayers: playerIds.length
+    };
+    
+    console.log('✅ Parse result:', result);
+    return result;
+    
+  } catch (error) {
+    console.error('Error parsing selectedBoard:', error);
+    return {
+      playerIds: '',
+      boards: '',
+      totalPlayers: 0
+    };
+  }
+}
+
+// Helper function to get stage amount
+function getStageAmount(stage) {
+  const amounts = {
+    'A': 10, 'B': 10,
+    'C': 20, 'D': 20,
+    'E': 30, 'F': 30,
+    'G': 50, 'H': 50,
+    'I': 100, 'J': 100,
+    'K': 200, 'L': 200
+  };
+  return amounts[stage] || 10;
+}
+
+// Routes
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'Stage 1 Backend API is running!',
+    stage: 'Stage 1',
+    port: process.env.PORT,
+    connections: {
+      bigserver: bigserverConnected,
+      db_manager: dbManagerConnected
+    }
+  });
+});
+
+// Place bet endpoint
+app.post('/api/v1/game/place-bet', async (req, res) => {
+  try {
+    const { boardNumber, playerId, amount, stage } = req.body;
+    
+    console.log(`🎯 Stage1: Received bet request - Board: ${boardNumber}, Player: ${playerId}, Amount: ${amount}, Stage: ${stage}`);
+    
+    // Validate input
+    if (!boardNumber || !playerId || !amount || !stage) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: boardNumber, playerId, amount, stage'
+      });
+    }
+    
+    // Validate board number range
+    if (boardNumber < 1 || boardNumber > 400) {
+      return res.status(400).json({
+        success: false,
+        error: 'Board number must be between 1 and 400'
+      });
+    }
+    
+    // Step 1: Check player balance with BigServer
+    console.log(`💰 Stage1: Checking balance for player ${playerId}...`);
+    let balanceResponse;
+    try {
+      balanceResponse = await axios.get(`${BIGSERVER_URL}/api/v1/player/balance/${playerId}`, {
+        timeout: 10000,
+        headers: {
+          'Authorization': `Bearer ${process.env.BIGSERVER_API_KEY}`,
+          'X-API-Key': process.env.BIGSERVER_API_KEY
+        }
+      });
+    } catch (balanceError) {
+      console.error('❌ Stage1: Error checking balance:', balanceError.message);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to check player balance'
+      });
+    }
+    
+    if (!balanceResponse.data || !balanceResponse.data.success) {
+      return res.status(400).json({
+        success: false,
+        error: 'Unable to verify player balance'
+      });
+    }
+    
+    const playerBalance = balanceResponse.data.balance;
+    console.log(`💰 Stage1: Player balance: ${playerBalance}, Bet amount: ${amount}`);
+    
+    // Step 2: Validate sufficient balance
+    if (playerBalance < amount) {
+      return res.status(400).json({
+        success: false,
+        error: 'Insufficient balance'
+      });
+    }
+    
+    // Step 3: Deduct balance from BigServer
+    console.log(`💸 Stage1: Deducting ${amount} from player ${playerId}...`);
+    try {
+      await axios.post(`${BIGSERVER_URL}/api/v1/player/deduct`, {
+        playerId: playerId,
+        amount: amount
+      }, {
+        timeout: 10000,
+        headers: {
+          'Authorization': `Bearer ${process.env.BIGSERVER_API_KEY}`,
+          'X-API-Key': process.env.BIGSERVER_API_KEY,
+          'Content-Type': 'application/json'
+        }
+      });
+    } catch (deductError) {
+      console.error('❌ Stage1: Error deducting balance:', deductError.message);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to deduct balance'
+      });
+    }
+    
+    // Step 4: Update game in DB Manager
+    console.log(`🗄️ Stage1: Updating game ${stage} with new bet...`);
+    try {
+      const updateResponse = await axios.put(`${DB_MANAGER_URL}/api/v1/stage-${stage.toLowerCase()}/update-game`, {
+        newPlayerId: playerId,
+        newBoardNumber: boardNumber,
+        amount: amount
+      }, {
+        timeout: 10000,
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (!updateResponse.data || !updateResponse.data.success) {
+        const error = updateResponse.data?.error || 'Failed to update game';
+        
+        // Check if this is a 2-board limit error - don't rollback balance for this
+        if (error.includes('maximum limit of 2 boards')) {
+          console.log(`🚫 Stage1: 2-board limit reached for player ${playerId}`);
+          return res.status(400).json({
+            success: false,
+            error: error,
+            currentBoards: updateResponse.data?.currentBoards || 0,
+            maxBoards: updateResponse.data?.maxBoards || 2,
+            type: 'board_limit_error'
+          });
+        }
+        
+        throw new Error(error);
+      }
+      
+      const updatedGame = updateResponse.data.data;
+      console.log(`✅ Stage1: Game updated successfully - Game ID: ${updatedGame.gameId}, New Players: ${updatedGame.totalPlayers}`);
+      
+      // Step 5: Return success response
+      res.json({
+        success: true,
+        data: {
+          gameId: updatedGame.gameId,
+          boardNumber: boardNumber,
+          playerId: playerId,
+          amount: amount,
+          newBalance: playerBalance - amount,
+          updatedGame: updatedGame,
+          timestamp: new Date().toISOString()
+        },
+        message: 'Bet placed successfully'
+      });
+      
+    } catch (updateError) {
+      console.error('❌ Stage1: Error updating game:', updateError.message);
+      
+      // Rollback: Restore balance if game update failed
+      try {
+        await axios.post(`${BIGSERVER_URL}/api/v1/player/add`, {
+          playerId: playerId,
+          amount: amount
+        }, {
+          timeout: 10000,
+          headers: {
+            'Authorization': `Bearer ${process.env.BIGSERVER_API_KEY}`,
+            'X-API-Key': process.env.BIGSERVER_API_KEY,
+            'Content-Type': 'application/json'
+          }
+        });
+        console.log(`💰 Stage1: Balance restored for player ${playerId}`);
+      } catch (rollbackError) {
+        console.error('❌ Stage1: Failed to restore balance:', rollbackError.message);
+      }
+      
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to place bet - balance has been restored'
+      });
+    }
+    
+  } catch (error) {
+    console.error('❌ Stage1: Error placing bet:', error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      details: error.message
+    });
+  }
+});
+
+// Enhanced health check endpoint
+app.get('/health', async (req, res) => {
+  try {
+    const health = await performHealthCheck();
+    res.json(health);
+  } catch (error) {
+    console.error('Health check error:', error.message);
+    res.status(500).json({
+      status: 'error',
+      error: 'Health check failed',
+      details: error.message
+    });
+  }
+});
+
+// Secure API endpoint to communicate with BigServer
+app.post('/api/bigserver', async (req, res) => {
+  try {
+    const { endpoint, method = 'GET', data } = req.body;
+    
+    if (!endpoint) {
+      return res.status(400).json({ error: 'Endpoint is required' });
+    }
+    
+    const config = {
+      method: method.toLowerCase(),
+      url: `${BIGSERVER_URL}${endpoint}`,
+      timeout: 10000,
+      headers: {
+        'Authorization': `Bearer ${process.env.BIGSERVER_API_KEY}`,
+        'X-API-Key': process.env.BIGSERVER_API_KEY,
+        'Content-Type': 'application/json'
+      }
+    };
+    
+    if (data && (method.toLowerCase() === 'post' || method.toLowerCase() === 'put')) {
+      config.data = data;
+    }
+    
+    const response = await axios(config);
+    
+    res.json({
+      success: true,
+      data: response.data,
+      status: response.status
+    });
+  } catch (error) {
+    console.error('Error communicating with BigServer:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      status: error.response?.status || 500
+    });
+  }
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ error: 'Something went wrong!' });
+});
+
+// Enhanced services status endpoint
+app.get('/services', async (req, res) => {
+  try {
+    await checkServiceConnections();
+    
+    res.json({
+      stage: 'Stage 1',
+      timestamp: new Date().toISOString(),
+      services: {
+        bigserver: {
+          url: BIGSERVER_URL,
+          connected: bigserverConnected,
+          port: process.env.BIGSERVER_PORT,
+          authenticated: !!process.env.BIGSERVER_API_KEY,
+          status: bigserverConnected ? 'operational' : 'offline'
+        },
+        db_manager: {
+          url: DB_MANAGER_URL,
+          connected: dbManagerConnected,
+          port: process.env.DB_MANAGER_PORT,
+          status: dbManagerConnected ? 'operational' : 'offline'
+        }
+      },
+      overall: (bigserverConnected && dbManagerConnected) ? 'all_systems_go' : 'degraded_operation'
+    });
+  } catch (error) {
+    console.error('Services status error:', error.message);
+    res.status(500).json({
+      error: 'Failed to get services status',
+      details: error.message
+    });
+  }
+});
+
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({ error: 'Route not found' });
+});
+
+const PORT = process.env.PORT;
+
+// Start server and check connections
+app.listen(PORT, async () => {
+  console.log(`🚀 Stage 1 Backend API is running on port ${PORT}`);
+  console.log(`📋 Health Check: http://localhost:${PORT}/health`);
+  console.log(`🔗 Services Status: http://localhost:${PORT}/services`);
+  console.log('---');
+  
+  // Check service connections on startup
+  await checkServiceConnections();
+  
+  // Check connections every 30 seconds
+  setInterval(checkServiceConnections, 30000);
+});
+
+module.exports = app;
