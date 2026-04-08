@@ -411,25 +411,45 @@ app.get(`${apiPrefix}/game/latest-data`, async (req, res) => {
   } catch (error) {
     console.error('❌ Stage1: Error getting latest game data from DB Manager:', error.message);
     
-    // Return fallback data if DB Manager is unavailable
-    const fallbackData = {
-      gameId: 'G00000',
-      payout: 0,
-      players: '',
-      boards: '',
-      totalPlayers: 0,
-      stage: 'A',
-      timestamp: new Date().toISOString()
-    };
-    
-    res.json({
-      success: true,
-      data: fallbackData,
-      source: 'fallback',
-      stage: 'stage1',
-      warning: 'DB Manager unavailable, using fallback data',
-      timestamp: new Date().toISOString()
-    });
+    try {
+      const { stage = 'a' } = req.query;
+      console.log(`🔄 Stage1: DB Manager failed, creating new game for Stage ${stage.toUpperCase()}...`);
+
+      const newGameData = await createNewGameForStage(stage.toLowerCase());
+      console.log(`✅ Stage1: Created new fallback game for Stage ${stage.toUpperCase()}:`, newGameData);
+
+      res.json({
+        success: true,
+        data: newGameData,
+        source: 'fallback_created',
+        stage: 'stage1',
+        warning: 'DB Manager unavailable, created new game',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    } catch (createError) {
+      console.error('❌ Stage1: Failed to create fallback game:', createError.message);
+
+      const fallbackData = {
+        gameId: 'G00000',
+        payout: 0,
+        players: '',
+        boards: '',
+        totalPlayers: 0,
+        stage: 'A',
+        timestamp: new Date().toISOString()
+      };
+
+      res.json({
+        success: true,
+        data: fallbackData,
+        source: 'emergency_fallback',
+        stage: 'stage1',
+        warning: 'All systems failed, using emergency fallback',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
   }
 });
 
@@ -486,6 +506,69 @@ function parseSelectedBoard(selectedBoard) {
       totalPlayers: 0
     };
   }
+}
+
+// Helper function to create a new game when no existing DB data is available
+async function createNewGameForStage(stage) {
+  try {
+    const timestamp = Date.now();
+    const gameId = `G${timestamp.toString().slice(-5)}`;
+    const sampleData = getSampleDataForStage(stage);
+
+    console.log(`🎮 Stage1: Creating new game ${gameId} for Stage ${stage.toUpperCase()}...`);
+
+    try {
+      if (dbManagerConnected) {
+        const response = await axios.post(`${DB_MANAGER_URL}/api/v1/stage-${stage}/create`, {
+          gameId: gameId,
+          playerId: sampleData.playerId,
+          selectedBoard: sampleData.selectedBoard,
+          status: 'active',
+          payout: sampleData.payout,
+          amount: sampleData.amount
+        }, { timeout: 10000 });
+
+        if (response.data && response.data.success) {
+          console.log(`💾 Stage1: Successfully saved new game ${gameId} to DB Manager`);
+        }
+      }
+    } catch (dbError) {
+      console.warn(`⚠️ Stage1: Could not save new game ${gameId} to DB Manager:`, dbError.message);
+    }
+
+    const parsedData = parseSelectedBoard(sampleData.selectedBoard);
+    return {
+      gameId: gameId,
+      payout: sampleData.payout,
+      players: parsedData.playerIds,
+      boards: parsedData.boards,
+      totalPlayers: parsedData.totalPlayers,
+      stage: stage.toUpperCase(),
+      timestamp: new Date().toISOString()
+    };
+  } catch (error) {
+    console.error('❌ Stage1: Error creating new game:', error.message);
+    throw error;
+  }
+}
+
+function getSampleDataForStage(stage) {
+  const stageSamples = {
+    'a': { playerId: '+251909090901,+251909090902', selectedBoard: '+251909090901:15,+251909090902:23', payout: 16, amount: 10 },
+    'b': { playerId: '+251909090903,+251909090904', selectedBoard: '+251909090903:45,+251909090904:67', payout: 16, amount: 10 },
+    'c': { playerId: '+251909090905,+251909090906', selectedBoard: '+251909090905:12,+251909090906:34', payout: 32, amount: 20 },
+    'd': { playerId: '+251909090907,+251909090908', selectedBoard: '+251909090907:56,+251909090908:78', payout: 32, amount: 20 },
+    'e': { playerId: '+251909090909,+251909090910', selectedBoard: '+251909090909:2,+251909090910:4', payout: 48, amount: 30 },
+    'f': { playerId: '+251909090911,+251909090912', selectedBoard: '+251909090911:6,+251909090912:8', payout: 48, amount: 30 },
+    'g': { playerId: '+251909090913,+251909090914', selectedBoard: '+251909090913:10,+251909090914:12', payout: 80, amount: 50 },
+    'h': { playerId: '+251909090915,+251909090916', selectedBoard: '+251909090915:14,+251909090916:16', payout: 80, amount: 50 },
+    'i': { playerId: '+251909090917,+251909090918', selectedBoard: '+251909090917:18,+251909090918:20', payout: 160, amount: 100 },
+    'j': { playerId: '+251909090919,+251909090920', selectedBoard: '+251909090919:22,+251909090920:24', payout: 160, amount: 100 },
+    'k': { playerId: '+251909090921,+251909090922', selectedBoard: '+251909090921:26,+251909090922:28', payout: 320, amount: 200 },
+    'l': { playerId: '+251909090923,+251909090924', selectedBoard: '+251909090923:30,+251909090924:32', payout: 320, amount: 200 }
+  };
+
+  return stageSamples[stage] || stageSamples['a'];
 }
 
 // Helper function to get stage amount
