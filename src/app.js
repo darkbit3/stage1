@@ -8,8 +8,8 @@ require('dotenv').config();
 const app = express();
 
 // Service URLs
-const BIGSERVER_URL = `http://localhost:${process.env.BIGSERVER_PORT}`;
-const DB_MANAGER_URL = `http://localhost:${process.env.DB_MANAGER_PORT}`;
+const BIGSERVER_URL = process.env.BIGSERVER_URL || `http://localhost:${process.env.BIGSERVER_PORT}`;
+const DB_MANAGER_URL = process.env.DB_MANAGER || `http://localhost:${process.env.DB_MANAGER_PORT}`;
 
 // Service connection status
 let bigserverConnected = false;
