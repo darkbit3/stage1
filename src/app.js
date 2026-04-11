@@ -90,17 +90,26 @@ const checkServiceConnections = async () => {
     };
 
     try {
-      try {
-        const dbManagerResult = await tryDbManager(DB_MANAGER_LOCAL_URL);
-        console.log('✅ Connected to local DB Manager on port ' + process.env.DB_MANAGER_PORT);
-        console.log('   📊 DB Manager Status:', dbManagerResult.data.status);
-        console.log('   🗄️  Database Status:', dbManagerResult.data.databases?.sqlite?.status || 'Unknown');
-      } catch (localError) {
-        console.warn('⚠️ Local DB Manager failed, switching to remote DB Manager URL:', DB_MANAGER_REMOTE_URL);
+      // Skip local connection if USE_REMOTE_DB is set to true
+      if (process.env.USE_REMOTE_DB === 'true') {
+        console.log('🔄 USE_REMOTE_DB is true, skipping local DB Manager connection');
         const dbManagerResult = await tryDbManager(DB_MANAGER_REMOTE_URL);
-        console.log('✅ Connected to DB Manager via remote fallback');
+        console.log('✅ Connected to DB Manager via remote URL');
         console.log('   📊 DB Manager Status:', dbManagerResult.data.status);
         console.log('   🗄️  Database Status:', dbManagerResult.data.databases?.sqlite?.status || 'Unknown');
+      } else {
+        try {
+          const dbManagerResult = await tryDbManager(DB_MANAGER_LOCAL_URL);
+          console.log('✅ Connected to local DB Manager on port ' + process.env.DB_MANAGER_PORT);
+          console.log('   📊 DB Manager Status:', dbManagerResult.data.status);
+          console.log('   🗄️  Database Status:', dbManagerResult.data.databases?.sqlite?.status || 'Unknown');
+        } catch (localError) {
+          console.warn('⚠️ Local DB Manager failed, switching to remote DB Manager URL:', DB_MANAGER_REMOTE_URL);
+          const dbManagerResult = await tryDbManager(DB_MANAGER_REMOTE_URL);
+          console.log('✅ Connected to DB Manager via remote fallback');
+          console.log('   📊 DB Manager Status:', dbManagerResult.data.status);
+          console.log('   🗄️  Database Status:', dbManagerResult.data.databases?.sqlite?.status || 'Unknown');
+        }
       }
     } catch (error) {
       dbManagerConnected = false;
