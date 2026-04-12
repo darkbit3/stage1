@@ -19,6 +19,15 @@ const io = socketIo(server, {
   }
 });
 
+const {
+  getRoomCountdown,
+  resetRoomCountdown,
+  decrementCountdowns,
+  setRoomCountdown,
+  getAllCountdowns,
+  DEFAULT_COUNTDOWN_SECONDS
+} = require('./countdownManager');
+
 // Service URLs
 const BIGSERVER_URL = process.env.BIGSERVER_URL || `http://localhost:${process.env.BIGSERVER_PORT}`;
 const DB_MANAGER_LOCAL_URL = `http://localhost:${process.env.DB_MANAGER_PORT || 3007}`;
@@ -472,6 +481,29 @@ app.use(`${apiPrefix}/games`, require('./routes/gameRoutes'));
 app.use(`${apiPrefix}/players`, require('./routes/playerRoutes'));
 app.use(`${apiPrefix}/stage-a`, require('./routes/stageARoutes'));
 app.use(`${apiPrefix}/stage-b`, require('./routes/stageBroutes'));
+
+// Countdown endpoint for room timers
+app.get(`${apiPrefix}/room-countdown`, (req, res) => {
+  const room = String(req.query.room || '1');
+  if (!['1', '2'].includes(room)) {
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid room. Allowed values are 1 or 2.'
+    });
+  }
+
+  const countdown = getRoomCountdown(room);
+  res.json({
+    success: true,
+    data: {
+      room,
+      countdown: countdown.seconds,
+      active: countdown.active,
+      resetSeconds: DEFAULT_COUNTDOWN_SECONDS
+    },
+    timestamp: new Date().toISOString()
+  });
+});
 
 // Enhanced DB Manager Integration Routes
 app.get(`${apiPrefix}/game/last-id`, async (req, res) => {
