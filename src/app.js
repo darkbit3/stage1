@@ -1246,6 +1246,11 @@ app.listen(PORT, async () => {
   setInterval(() => {
     requestRealtimeGameData('a');
   }, 10000);
+
+  // Decrement countdowns every second
+  setInterval(() => {
+    decrementCountdowns();
+  }, 1000);
 });
 
 module.exports = app;
